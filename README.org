@@ -1,0 +1,57 @@
+#+TITLE: r/place shenanigans
+
+* The Event
+[[https://www.reddit.com/r/place][r/place]] is a special event / social experiment that was held on Reddit to celebrate April 1st in 2017, and once again this year in 2022. It a special subreddit that hosts the Canvas - a pixel grid where each redditor can change the color of a pixel every 5 minutes. There are no rules beyond that.
+The redditors then collaborate with other to create pixel art. Due to that limited canvas space, territory disputes erupt in an attempt to expand art pieces and treaties are formed to protect existing ones. The ultimate goal is to have your art piece included in the final canvas, for prosperity.
+
+This year, the event lasted about 3.5 days. The canvas started out as a 1000x1000 grid, and then expanded to 2000x1000 grid after a day or so. It later finally expanded once again to a 2000x2000 grid. In the last few hours of the event, users were only allowed to place white pixels, effectively ending the event and making the users clean the canvas back to its original white state.
+
+* The Data
+After the event was over, the full history of placed pixels was [[https://www.reddit.com/r/place/comments/txvk2d/rplace_datasets_april_fools_2022/][released]]. The data includes the UTC timestamp in which the pixel was placed, a hashed identifier of the user that placed it, the pixel color and its coordinates.
+
+* Tiny r/place
+I wanted to play around with the data, but it was too big for my liking:
+- The data was released in 79 gzip'ed csv files.
+- Each csv file contains about 2000000 lines.
+- The length of the UTC timestamp is 28 characters.
+- The user id is 64 bytes long, making it 88 bytes long after base64 encoding.
+- The colors are hex encoded, making them 7 bytes long.
+- The average x,y coordinate pair is 8 bytes long, but contains a comma and is surrounded by quotes, totaling at 11 bytes.
+- Adding 3 more commas in each line, we arrive at a line size of 137 bytes, and the average csv file will be 274MB.
+- 79 csv files will total at about 20GB when uncompressed.
+
+** Reducing the size by going binary
+- The largest reduction in size can be achieved by throwing the user id away. These are 88 bytes I really don't care about. While it can be used for some interesting analysis, it's not correlated to actual users in any way as of yet.
+- Instead of using full timestamps for each pixels, we can go by the number of milliseconds since the start of the event, and store it as a 4-byte integer. This saves another 24 bytes for each line.
+- Instead of hex-coded colors, we can keep a small list of the colors that were available to the users and only keep a byte that specifies the index in this list. This saves 6 bytes per line.
+- Each coordinate can be stored in a 2-byte word since they only go up to 2000, so we save another 8 bytes per line.
+- In total, we can reduce the size of each line to 9 bytes instead of 137 by switching to an anonymous and binary format. If we want to keep the user ids, switching to binary will let us  lose the base64 encoding, making each line 73 bytes long.
+- This yield a 15x smaller file size for each csv for a anonymous format, or a modest ~2x reduction for a format with user ids. This reduction is achieved simply by encoding, and without any compression, so the data can still be used as-is (just with some specialized tools).
+
+To convert the data to the new format I've written ~trp~, which encodes the csv data from stdin into the binary format, or decodes the binary format into csv. This is as easy as:
+
+#+begin_src sh
+curl https://placedata.reddit.com/data/canvas-history/2022_place_canvas_history-000000000000.csv.gzip | gzip -d | ./trp > 2022_place_canvas_history-000000000000.trp
+./trp -d < 2022_place_canvas_history-000000000000.trp | head
+#+end_src
+
+The ~--with-uids~ flag can be added during encoding to include the user ids. One byte at the start of the .trp file signals whether the data in the file has user ids or not.
+
+* Canvas Snapshots
+As an example project, I've built a small script to rebuild the canvas (or any portion of it) at a specified time. This is as simple as going through the data in chronological order up to the specified time and reapplying the pixels.
+
+To save time, I've opted to build "checkpoints" of the canvas state after every csv file. By ordering the csv files according to the timestamp of their first pixels (they are labeled out of order!), we can choose the file closest to the wanted timestamp, use the appropriate checkpoint, and only reapply pixels from a single file.
+
+For example, we can get the upper left 1000x1000 part of the canvas (the initial canvas before the expansions) right before the first expansion occurred. The first pixel in the new section was placed on April 2nd, 16:24:56.239 UTC time, at coordinates ~(1007,491)~. This is 27 hours, 40 minutes and 45.923 seconds from the first pixel placement.
+
+#+begin_src sh
+./rpsnapshot -H 27 -M 40 -S 45.923 before_expansion.png --coords 0,0,1000,1000
+#+end_src
+
+** Setting up for snapshot taking
+I've written a small bash script, ~setup.sh~, to:
+1. Download all csv files and encode them in the minimal trp format.
+2. Sort the files according to the time of their first pixel placement and write the times and file numbers to a csv file in order.
+3. Build checkpoints of the canvas for each file.
+
+The snapshot script relies on this setup when choosing csv files and appropriate checkpoints.

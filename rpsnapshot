@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+
+import csv
+import argparse
+import pathlib
+from datetime import datetime, timedelta
+from PIL import Image
+
+import trplace
+
+TRP_DATA_DIR = './data'
+CANVAS_CHECKPOINTS_DIR = './canvas_checkpoints'
+DATA_DT_CSV = './data_dt.csv'
+
+
+def subcanvas(s):
+    try:
+        x1, y1, x2, y2 = map(int, s.split(','))
+        return x1, y1, x2, y2
+    except:
+        raise ValueError("Invalid coordinates given")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Build canvas up to the given time')
+    parser.add_argument('-H', '--hours', type=int, help='Hours since r/place starting time', default=0)
+    parser.add_argument('-M', '--minutes', type=int, help='Minutes since r/place starting time', default=0)
+    parser.add_argument('-S', '--seconds', type=float, help='Seconds since r/place starting time (can add milliseconds)', default=0)
+
+    parser.add_argument('--coords', type=subcanvas, metavar='x1,y1,x2,y2', help='Only build a rectangle, with top left corner at x1,y1 and bottom right at x2,y2', default='0,0,2000,2000')
+    parser.add_argument('outpath', type=pathlib.Path,
+                        help='Path to write canvas image to, in PNG format')
+
+    parser.add_argument('--data-dir', type=pathlib.Path, help=f'Directory storing the trp data. Default is {TRP_DATA_DIR}', default=TRP_DATA_DIR)
+    parser.add_argument('--checkpoints', type=pathlib.Path, help=f'Directory storing canvas checkpoints. Default is {CANVAS_CHECKPOINTS_DIR}', default=CANVAS_CHECKPOINTS_DIR)
+    parser.add_argument('--data-dt-csv', type=pathlib.Path, help=f'Path to csv stating the starting time of each trp file. Default is {DATA_DT_CSV}', default=DATA_DT_CSV)
+
+    args = parser.parse_args()
+
+    assert args.data_dir.is_dir(), f"Missing data directory {args.data_dir}"
+    assert args.checkpoints.is_dir(), f"Missing checkpoints directory {args.checkpoints}"
+    assert args.data_dt_csv.is_file(), f"Missing data datetime csv {args.data_dt_csv}"
+
+    snapshot_dt = trplace.R_PLACE_START_DT + timedelta(hours=args.hours,
+                                                       minutes=args.minutes,
+                                                       seconds=args.seconds)
+    x1, y1, x2, y2 = args.coords
+    canvas = trplace.Canvas((x1, y1), (x2, y2))
+
+    with args.data_dt_csv.open('r') as data_dt:
+        reader = csv.reader(data_dt)
+        data_dts = [(datetime.strptime(dt, trplace.R_PLACE_DATA_TIME_FMT), filenum) for (dt, filenum) in reader]
+
+    data_dts.sort(key=lambda r: r[0], reverse=True)
+    ordered_filenums = [filenum for _, filenum in data_dts[::-1]]
+
+    for (dt, filenum) in data_dts:
+        if dt <= snapshot_dt:
+            filenum_idx = ordered_filenums.index(filenum)
+            if filenum_idx > 0:
+                checkpoint = ordered_filenums[filenum_idx - 1]
+                canvas.from_image(Image.open(args.checkpoints / f'{checkpoint}.png'))
+
+            with open(args.data_dir / f'2022_place_canvas_history-0000000000{filenum}.trp', 'rb') as trp_data:
+                for ts, _, color, x, y in trplace.Reader(trp_data):
+                    if ts <= snapshot_dt:
+                        canvas.apply_pixel(ts, x, y, color)
+                    else:
+                        break
+            break
+
+    canvas.to_image().save(args.outpath)

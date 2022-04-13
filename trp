@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+
+import sys
+import csv
+import argparse
+
+import trplace
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Encode/Decode csv data from the r/place canvas to a binary format')
+    parser.add_argument('-d', '--decode', action='store_true',
+                        help='Decode to csv, default is encode')
+    parser.add_argument('-i', '--infile', type=argparse.FileType('r'),
+                        default=sys.stdin, help='Read input from file, default is stdin')
+    parser.add_argument('-o', '--outfile', type=argparse.FileType('w'),
+                        default=sys.stdout, help='Write output to file, default is stdout')
+    parser.add_argument('--with-uids', action='store_true',
+                        help='Keep user ids when encoding')
+
+    args = parser.parse_args()
+
+    if args.decode:
+        writer = csv.writer(args.outfile)
+        writer.writerow(['timestamp', 'user_id', 'pixel_color', 'coordinate'])
+        reader = trplace.ReaderCsv(args.infile.buffer)
+
+    else:
+        writer = trplace.Writer(args.outfile.buffer, args.with_uids)
+        # skip headers
+        args.infile.readline()
+        reader = csv.reader(args.infile)
+
+    for row in reader:
+        try:
+            writer.writerow(row)
+        except BrokenPipeError:
+            break
